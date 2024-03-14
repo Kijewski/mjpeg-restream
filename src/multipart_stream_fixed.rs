@@ -1,12 +1,13 @@
 // https://gist.githubusercontent.com/grasevski/a7238b5f3775605253b8e73ea2a8d5f2/raw/f083c5b265cd15cff049ee8a344a75c118e7f81e/multipart_stream.rs
 
 //! Parser for async multipart streams.
+use std::convert::TryFrom;
+
 use async_stream::try_stream;
 use bytes::{Buf as _, Bytes, BytesMut};
 use futures_util::{Stream, StreamExt as _};
 use http::header::{HeaderMap, HeaderName, HeaderValue};
 use memchr::memmem::Finder;
-use std::convert::TryFrom;
 
 /// Max number of headers to parse.
 const MAX_HEADER: usize = 16;
