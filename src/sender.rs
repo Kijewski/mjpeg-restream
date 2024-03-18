@@ -5,7 +5,6 @@ use std::path::PathBuf;
 
 use actix_web::{get, App, HttpResponse, HttpServer};
 use bytes::Bytes;
-use futures_util::stream::unfold;
 use futures_util::StreamExt;
 use tokio::task::spawn_blocking;
 
@@ -43,17 +42,17 @@ async fn index() -> HttpResponse {
 
 #[get("/image.jpeg")]
 async fn send_image() -> HttpResponse {
-    // FIXME: Wie kann ich Box::pin() umgehen?
-    let updates = Box::pin(image_holder().stream_updates());
     HttpResponse::Ok()
         .append_header((
             http::header::CONTENT_TYPE,
             "multipart/x-mixed-replace; boundary=--frameboundary",
         ))
-        .streaming(unfold(updates, |mut updates| async move {
-            let bytes = updates.next().await?;
-            Some((Ok::<Bytes, NoError>(bytes), updates))
-        }))
+        .streaming(async_stream::stream! {
+            let mut updates = std::pin::pin!(image_holder().stream_updates());
+            while let Some(bytes) = updates.next().await {
+                yield Ok::<Bytes, NoError>(bytes);
+            }
+        })
 }
 
 #[derive(Debug, Clone, Copy)]
