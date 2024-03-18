@@ -1,3 +1,10 @@
+#![forbid(future_incompatible)]
+#![forbid(rust_2021_compatibility)]
+#![forbid(unreachable_patterns)]
+#![forbid(unsafe_code)]
+#![deny(nonstandard_style)]
+#![warn(unused_crate_dependencies)]
+
 mod listener;
 mod multipart_stream_fixed;
 mod sender;

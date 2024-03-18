@@ -8,7 +8,6 @@ publish = false
 actix-web = "4.5.1"
 anyhow = "1.0.81"
 async-condvar-fair = { version = "1.0.1", default-features = false, features = ["tokio"] }
-async-event = "0.1.0"
 async-stream = "0.3.5"
 bytes = "1.5.0"
 clap = { version = "4.5.3", default-features = false, features = ["derive", "help", "std"] }
@@ -20,6 +19,7 @@ memchr = "2.7.1"
 mime = "0.3.17"
 multipart-stream = "0.1.2"
 once_cell = "1.19.0"
+pin-project = "1.1.5"
 pretty-error-debug = "0.3.0"
 reqwest = { version = "0.11.26", default-features = false, features = ["rustls", "rustls-tls-webpki-roots", "stream", "tokio-rustls"] }
 thiserror = "1.0.58"

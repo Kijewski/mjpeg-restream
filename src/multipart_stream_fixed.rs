@@ -1,85 +1,322 @@
-// https://gist.github.com/grasevski/a7238b5f3775605253b8e73ea2a8d5f2/f083c5b265cd15cff049ee8a344a75c118e7f81e
+// https://github.com/scottlamb/multipart-stream-rs/commit/0645358b094217867d306b995fc81e517631cb70
+// + https://github.com/scottlamb/multipart-stream-rs/pull/3/commits/929cc8035bb484db2a65bc5c1fb16a966d085986
+// + my changes
 
-//! Parser for async multipart streams.
-use std::convert::TryFrom;
+// Copyright (C) 2021 Scott Lamb <slamb@slamb.org>
+// SPDX-License-Identifier: MIT OR Apache-2.0
 
-use async_stream::try_stream;
-use bytes::{Buf as _, Bytes, BytesMut};
-use futures_util::{Stream, StreamExt as _};
-use http::header::{HeaderMap, HeaderName, HeaderValue};
-use memchr::memmem::Finder;
+// This implementation is gross (it's hard to read and copies when not
+// necessary), I think due to a combination of the following:
+//
+// 1.  the current state of Rust async: in particular, that there are no coroutines.
+// 2.  my inexperience with Rust async
+// 3.  how quickly I threw this together.
+//
+// Fortunately the badness is hidden behind a decent interface, and there are decent tests
+// of success cases with partial data. In the situations we're using it (small
+// bits of metadata rather than video), the inefficient probably doesn't matter.
+// TODO: add tests of bad inputs.
 
-/// Max number of headers to parse.
-const MAX_HEADER: usize = 16;
+//! Parses a [`Bytes`] stream into a [`Part`] stream.
 
-/// A single part, including its headers and body.
-#[derive(Debug, Eq, PartialEq)]
-pub struct Part {
-    /// The http headers for this part.
-    pub headers: HeaderMap,
+use bytes::{Buf, Bytes, BytesMut};
+use futures_util::Stream;
+use http::header::{self, HeaderMap, HeaderName, HeaderValue};
+use httparse;
+use multipart_stream::Part;
+use pin_project::pin_project;
+use std::pin::Pin;
+use std::task::{Context, Poll};
 
-    /// The body of the part.
-    pub body: Bytes,
+/// An error when reading from the underlying stream or parsing.
+///
+/// When the error comes from the underlying stream, it can be examined via
+/// [`std::error::Error::source`].
+#[derive(Debug)]
+pub struct Error(ErrorInt);
+
+#[derive(Debug)]
+enum ErrorInt {
+    ParseError(String),
+    Underlying(Box<dyn std::error::Error + Send + Sync>),
 }
 
-impl TryFrom<Bytes> for Part {
-    type Error = anyhow::Error;
-
-    fn try_from(mut body: Bytes) -> Result<Self, Self::Error> {
-        let mut headers = [httparse::EMPTY_HEADER; MAX_HEADER];
-        if let httparse::Status::Complete((pos, raw)) =
-            httparse::parse_headers(&body, &mut headers)?
-        {
-            let mut headers = HeaderMap::with_capacity(raw.len());
-            for h in raw {
-                headers.append(
-                    HeaderName::from_bytes(h.name.as_bytes())?,
-                    HeaderValue::from_bytes(h.value)?,
-                );
-            }
-            body.advance(pos);
-            Ok(Self { headers, body })
-        } else {
-            Err(anyhow::anyhow!("Invalid part, {} bytes", body.len()))
+impl std::fmt::Display for Error {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self.0 {
+            ErrorInt::ParseError(ref s) => f.pad(s),
+            ErrorInt::Underlying(ref e) => e.fmt(f),
         }
     }
 }
 
-/// Parses a multipart stream.
-pub fn parse(
-    input: impl Stream<Item = Result<Bytes, impl std::error::Error + Send + Sync + 'static>> + Unpin,
-    boundary: &str,
-) -> impl Stream<Item = anyhow::Result<Part>> + Unpin {
-    let boundary = format!("--{}\r\n", boundary.strip_prefix("--").unwrap_or(boundary));
-    Box::pin(parts(input, boundary).map(|x| x?.try_into()))
+impl std::error::Error for Error {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match &self.0 {
+            ErrorInt::Underlying(e) => Some(&**e),
+            _ => None,
+        }
+    }
 }
 
-/// Splits a multipart stream into parts.
-fn parts<E: std::error::Error + Send + Sync + 'static>(
-    mut input: impl Stream<Item = Result<Bytes, E>> + Unpin,
-    boundary: String,
-) -> impl Stream<Item = Result<Bytes, E>> {
-    let (mut started, mut buf) = (false, BytesMut::new());
-    try_stream! {
-        let finder = Finder::new(&boundary);
-        while let Some(data) = input.next().await {
-            let data = data?;
-            buf.extend_from_slice(&data);
-            let (k, mut pos) = (buf.len() - data.len(), 0);
-            let offset = if k < boundary.len() {
-                0
-            } else {
-                k - boundary.len()
-            };
-            for ix in finder.find_iter(&buf[offset..]).map(|x| x + offset) {
-                if started {
-                    yield Bytes::copy_from_slice(&buf[pos..ix]);
-                } else {
-                    started = true;
+/// Creates a parse error with the specified format string and arguments.
+macro_rules! parse_err {
+    ($($arg:tt)*) => {
+        Error(ErrorInt::ParseError(format!($($arg)*)))
+    };
+}
+
+/// A parsing stream adapter, constructed via [`parse`] or [`ParserBuilder`].
+#[pin_project]
+pub struct Parser<S, E>
+where
+    S: Stream<Item = Result<Bytes, E>>,
+    E: Into<Box<dyn std::error::Error + Send + Sync>>,
+{
+    #[pin]
+    input: S,
+
+    /// The boundary with `--` prefix and `\r\n` suffix.
+    boundary: Vec<u8>,
+    buf: BytesMut,
+    state: State,
+    max_header_bytes: usize,
+    max_body_bytes: usize,
+}
+
+enum State {
+    /// Consuming 0 or more `\r\n` pairs, advancing when encountering a byte that doesn't fit that pattern.
+    Newlines,
+
+    /// Waiting for the completion of a boundary.
+    /// `pos` is the current offset within `boundary_buf`.
+    Boundary { pos: usize },
+
+    /// Waiting for a full set of headers.
+    Headers,
+
+    /// Waiting for a full body.
+    Body { headers: HeaderMap, body_len: Option<usize> },
+
+    /// The stream is finished (has already returned an error).
+    Done,
+}
+
+impl State {
+    /// Processes the current buffer contents.
+    ///
+    /// This reverses the order of the return value so it can return error via `?` and `bail!`.
+    /// The caller puts it back into the order expected by `Stream`.
+    fn process(
+        &mut self,
+        boundary: &[u8],
+        buf: &mut BytesMut,
+        max_header_bytes: usize,
+        max_body_bytes: usize,
+    ) -> Result<Poll<Option<Part>>, Error> {
+        'outer: loop {
+            match self {
+                State::Newlines => {
+                    while buf.len() >= 2 {
+                        if &buf[0..2] == b"\r\n" {
+                            buf.advance(2);
+                        } else {
+                            *self = Self::Boundary { pos: 0 };
+                            continue 'outer;
+                        }
+                    }
+                    if buf.len() == 1 && buf[0] != b'\r' {
+                        *self = Self::Boundary { pos: 0 };
+                    } else {
+                        return Ok(Poll::Pending);
+                    }
                 }
-                pos = ix + boundary.len();
+                State::Boundary { ref mut pos } => {
+                    let len = std::cmp::min(boundary.len() - *pos, buf.len());
+                    if buf[0..len] != boundary[*pos..*pos + len] {
+                        return Err(parse_err!("bad boundary"));
+                    }
+                    buf.advance(len);
+                    *pos += len;
+                    if *pos < boundary.len() {
+                        return Ok(Poll::Pending);
+                    }
+                    *self = State::Headers;
+                }
+                State::Headers => {
+                    let mut raw = [httparse::EMPTY_HEADER; 16];
+                    let headers = httparse::parse_headers(&buf, &mut raw)
+                        .map_err(|e| parse_err!("Part headers invalid: {}", e))?;
+                    match headers {
+                        httparse::Status::Complete((body_pos, raw)) => {
+                            let mut headers = HeaderMap::with_capacity(raw.len());
+                            for h in raw {
+                                headers.append(
+                                    HeaderName::from_bytes(h.name.as_bytes())
+                                        .map_err(|_| parse_err!("bad header name"))?,
+                                    HeaderValue::from_bytes(h.value)
+                                        .map_err(|_| parse_err!("bad header value"))?,
+                                );
+                            }
+                            buf.advance(body_pos);
+                            let body_len = headers
+                                .get(header::CONTENT_LENGTH)
+                                .map(|v| v.to_str())
+                                .transpose()
+                                .map_err(|_| parse_err!("Part Content-Length is not valid string"))?
+                                .map(|v| usize::from_str_radix(v, 10))
+                                .transpose()
+                                .map_err(|_| {
+                                    parse_err!("Part Content-Length is not valid usize")
+                                })?;
+                            if let Some(body_len) = body_len {
+                                if body_len > max_body_bytes {
+                                    return Err(parse_err!(
+                                        "body byte length {} exceeds maximum of {}",
+                                        body_len,
+                                        max_body_bytes
+                                    ));
+                                }
+                            }
+                            *self = State::Body { headers, body_len };
+                        }
+                        httparse::Status::Partial => {
+                            if buf.len() >= max_header_bytes {
+                                return Err(parse_err!(
+                                    "incomplete {}-byte header, vs maximum of {} bytes",
+                                    buf.len(),
+                                    max_header_bytes
+                                ));
+                            }
+                            return Ok(Poll::Pending);
+                        }
+                    }
+                }
+                State::Body { headers, ref mut body_len } => {
+                    if body_len.is_none() {
+                        if let Some(n) = memchr::memmem::find(buf, boundary) {
+                            *body_len = Some(n);
+                        } else if buf.len() > max_body_bytes {
+                            return Err(parse_err!(
+                                "body byte length {} exceeds maximum of {}",
+                                buf.len(),
+                                max_body_bytes
+                            ));
+                        }
+                    }
+                    if let Some(body_len) = body_len {
+                        if buf.len() >= *body_len && *body_len > 0 {
+                            let body = buf.split_to(*body_len).freeze();
+                            let headers = std::mem::replace(headers, HeaderMap::new());
+                            *self = State::Newlines;
+                            return Ok(Poll::Ready(Some(Part { headers, body })));
+                        }
+                    }
+                    return Ok(Poll::Pending);
+                }
+                State::Done => return Ok(Poll::Ready(None)),
             }
-            buf.advance(pos);
+        }
+    }
+}
+
+/// Flexible builder for [`Parser`].
+pub struct ParserBuilder {
+    max_header_bytes: usize,
+    max_body_bytes: usize,
+}
+
+impl ParserBuilder {
+    pub fn new() -> Self {
+        ParserBuilder {
+            max_header_bytes: usize::MAX,
+            max_body_bytes: usize::MAX,
+        }
+    }
+
+    /// Parses a [`Bytes`] stream into a [`Part`] stream.
+    ///
+    /// `boundary` should be as in the `boundary` parameter of the `Content-Type` header.
+    pub fn parse<S, E>(self, input: S, boundary: &str) -> impl Stream<Item = Result<Part, Error>>
+    where
+        S: Stream<Item = Result<Bytes, E>>,
+        E: Into<Box<dyn std::error::Error + Send + Sync>>,
+    {
+        let boundary = {
+            let mut line = Vec::with_capacity(boundary.len() + 4);
+            if !boundary.starts_with("--") {
+                line.extend_from_slice(b"--");
+            }
+            line.extend_from_slice(boundary.as_bytes());
+            line.extend_from_slice(b"\r\n");
+            line
+        };
+
+        Parser {
+            input,
+            buf: BytesMut::new(),
+            boundary,
+            state: State::Newlines,
+            max_header_bytes: self.max_header_bytes,
+            max_body_bytes: self.max_body_bytes,
+        }
+    }
+}
+
+/// Parses a [`Bytes`] stream into a [`Part`] stream.
+///
+/// `boundary` should be as in the `boundary` parameter of the `Content-Type` header.
+///
+/// This doesn't allow customizing the parser; use [`ParserBuilder`] instead if desired.
+pub fn parse<S, E>(input: S, boundary: &str) -> impl Stream<Item = Result<Part, Error>>
+where
+    S: Stream<Item = Result<Bytes, E>>,
+    E: Into<Box<dyn std::error::Error + Send + Sync>>,
+{
+    ParserBuilder::new().parse(input, boundary)
+}
+
+impl<S, E> Stream for Parser<S, E>
+where
+    S: Stream<Item = Result<Bytes, E>>,
+    E: Into<Box<dyn std::error::Error + Send + Sync>>,
+{
+    type Item = Result<Part, Error>;
+
+    fn poll_next(self: Pin<&mut Self>, ctx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        let mut this = self.project();
+        loop {
+            match this.state.process(
+                &this.boundary,
+                this.buf,
+                *this.max_header_bytes,
+                *this.max_body_bytes,
+            ) {
+                Err(e) => {
+                    *this.state = State::Done;
+                    return Poll::Ready(Some(Err(e.into())));
+                }
+                Ok(Poll::Ready(Some(r))) => return Poll::Ready(Some(Ok(r))),
+                Ok(Poll::Ready(None)) => return Poll::Ready(None),
+                Ok(Poll::Pending) => {}
+            }
+            match this.input.as_mut().poll_next(ctx) {
+                Poll::Pending => return Poll::Pending,
+                Poll::Ready(None) => {
+                    if !matches!(*this.state, State::Newlines) {
+                        *this.state = State::Done;
+                        return Poll::Ready(Some(Err(parse_err!("unexpected mid-part EOF"))));
+                    }
+                    return Poll::Ready(None);
+                }
+                Poll::Ready(Some(Err(e))) => {
+                    *this.state = State::Done;
+                    return Poll::Ready(Some(Err(Error(ErrorInt::Underlying(e.into())))));
+                }
+                Poll::Ready(Some(Ok(b))) => {
+                    this.buf.extend_from_slice(&b);
+                }
+            };
         }
     }
 }
