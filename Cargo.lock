@@ -955,6 +955,31 @@ dependencies = [
 ]
 
 [[package]]
+name = "mjpeg-restream"
+version = "0.1.0"
+dependencies = [
+ "actix-web",
+ "anyhow",
+ "async-condvar-fair",
+ "async-stream",
+ "bytes",
+ "clap",
+ "ctrlc",
+ "futures-util",
+ "http",
+ "httparse",
+ "memchr",
+ "mime",
+ "multipart-stream",
+ "once_cell",
+ "pin-project",
+ "pretty-error-debug",
+ "reqwest",
+ "thiserror",
+ "tokio",
+]
+
+[[package]]
 name = "multipart-stream"
 version = "0.1.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1702,31 +1727,6 @@ name = "version_check"
 version = "0.9.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "49874b5167b65d7193b8aba1567f5c7d93d001cafc34600cee003eda787e483f"
-
-[[package]]
-name = "video-dings"
-version = "0.1.0"
-dependencies = [
- "actix-web",
- "anyhow",
- "async-condvar-fair",
- "async-stream",
- "bytes",
- "clap",
- "ctrlc",
- "futures-util",
- "http",
- "httparse",
- "memchr",
- "mime",
- "multipart-stream",
- "once_cell",
- "pin-project",
- "pretty-error-debug",
- "reqwest",
- "thiserror",
- "tokio",
-]
 
 [[package]]
 name = "want"

@@ -1,8 +1,12 @@
 [package]
-name = "video-dings"
+name = "mjpeg-restream"
 version = "0.1.0"
 edition = "2021"
 publish = false
+authors = ["René Kijewski <crates.io@k6i.de>"]
+repository = "https://github.com/Kijewski/mjpeg-restream/"
+description = "Cache + restream an MJPEG 'video'"
+license = "GPL-3.0-or-later"  # via async-condvar-fair
 
 [dependencies]
 actix-web = "4.5.1"
