@@ -23,7 +23,7 @@ impl<T: Send + Sync + Clone> UpdateStream<T> {
                         yield bytes.clone();
                     }
                 }
-                self.cv.wait_no_relock((guard, &self.holder)).await;
+                let _ = self.cv.wait_no_relock((guard, &self.holder)).await;
             }
         }
     }

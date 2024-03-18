@@ -154,7 +154,7 @@ impl State {
                         httparse::Status::Complete((body_pos, raw)) => {
                             let mut headers = HeaderMap::with_capacity(raw.len());
                             for h in raw {
-                                headers.append(
+                                let _ = headers.append(
                                     HeaderName::from_bytes(h.name.as_bytes())
                                         .map_err(|_| parse_err!("bad header name"))?,
                                     HeaderValue::from_bytes(h.value)

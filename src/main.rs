@@ -3,7 +3,21 @@
 #![forbid(unreachable_patterns)]
 #![forbid(unsafe_code)]
 #![deny(nonstandard_style)]
+#![allow(unused_attributes)]
+#![warn(absolute_paths_not_starting_with_crate)]
+#![warn(elided_lifetimes_in_paths)]
+#![warn(explicit_outlives_requirements)]
+#![warn(meta_variable_misuse)]
+#![warn(missing_copy_implementations)]
+#![warn(missing_debug_implementations)]
+#![warn(non_ascii_idents)]
+#![warn(noop_method_call)]
+#![warn(single_use_lifetimes)]
+#![warn(trivial_casts)]
 #![warn(unused_crate_dependencies)]
+#![warn(unused_extern_crates)]
+#![warn(unused_lifetimes)]
+#![warn(unused_results)]
 
 mod listener;
 mod multipart_stream_fixed;
