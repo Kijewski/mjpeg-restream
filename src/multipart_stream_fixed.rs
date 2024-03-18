@@ -19,14 +19,15 @@
 
 //! Parses a [`Bytes`] stream into a [`Part`] stream.
 
+use std::pin::Pin;
+use std::task::{Context, Poll};
+
 use bytes::{Buf, Bytes, BytesMut};
 use futures_util::Stream;
 use http::header::{self, HeaderMap, HeaderName, HeaderValue};
 use httparse;
 use multipart_stream::Part;
 use pin_project::pin_project;
-use std::pin::Pin;
-use std::task::{Context, Poll};
 
 /// An error when reading from the underlying stream or parsing.
 ///
@@ -96,7 +97,10 @@ enum State {
     Headers,
 
     /// Waiting for a full body.
-    Body { headers: HeaderMap, body_len: Option<usize> },
+    Body {
+        headers: HeaderMap,
+        body_len: Option<usize>,
+    },
 
     /// The stream is finished (has already returned an error).
     Done,
@@ -130,7 +134,7 @@ impl State {
                     } else {
                         return Ok(Poll::Pending);
                     }
-                }
+                },
                 State::Boundary { ref mut pos } => {
                     let len = std::cmp::min(boundary.len() - *pos, buf.len());
                     if buf[0..len] != boundary[*pos..*pos + len] {
@@ -142,7 +146,7 @@ impl State {
                         return Ok(Poll::Pending);
                     }
                     *self = State::Headers;
-                }
+                },
                 State::Headers => {
                     let mut raw = [httparse::EMPTY_HEADER; 16];
                     let headers = httparse::parse_headers(&buf, &mut raw)
@@ -179,7 +183,7 @@ impl State {
                                 }
                             }
                             *self = State::Body { headers, body_len };
-                        }
+                        },
                         httparse::Status::Partial => {
                             if buf.len() >= max_header_bytes {
                                 return Err(parse_err!(
@@ -189,10 +193,13 @@ impl State {
                                 ));
                             }
                             return Ok(Poll::Pending);
-                        }
+                        },
                     }
-                }
-                State::Body { headers, ref mut body_len } => {
+                },
+                State::Body {
+                    headers,
+                    ref mut body_len,
+                } => {
                     if body_len.is_none() {
                         if let Some(n) = memchr::memmem::find(buf, boundary) {
                             *body_len = Some(n);
@@ -213,7 +220,7 @@ impl State {
                         }
                     }
                     return Ok(Poll::Pending);
-                }
+                },
                 State::Done => return Ok(Poll::Ready(None)),
             }
         }
@@ -295,10 +302,10 @@ where
                 Err(e) => {
                     *this.state = State::Done;
                     return Poll::Ready(Some(Err(e.into())));
-                }
+                },
                 Ok(Poll::Ready(Some(r))) => return Poll::Ready(Some(Ok(r))),
                 Ok(Poll::Ready(None)) => return Poll::Ready(None),
-                Ok(Poll::Pending) => {}
+                Ok(Poll::Pending) => {},
             }
             match this.input.as_mut().poll_next(ctx) {
                 Poll::Pending => return Poll::Pending,
@@ -308,14 +315,14 @@ where
                         return Poll::Ready(Some(Err(parse_err!("unexpected mid-part EOF"))));
                     }
                     return Poll::Ready(None);
-                }
+                },
                 Poll::Ready(Some(Err(e))) => {
                     *this.state = State::Done;
                     return Poll::Ready(Some(Err(Error(ErrorInt::Underlying(e.into())))));
-                }
+                },
                 Poll::Ready(Some(Ok(b))) => {
                     this.buf.extend_from_slice(&b);
-                }
+                },
             };
         }
     }
