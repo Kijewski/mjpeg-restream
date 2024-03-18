@@ -3,24 +3,23 @@ use std::time::Duration;
 use anyhow::anyhow;
 use futures_util::StreamExt;
 use mime::Mime;
+use reqwest::Url;
 use tokio::time::sleep;
 
 use crate::image_holder;
 use crate::multipart_stream_fixed::parse;
 
-pub async fn listener() -> anyhow::Result<()> {
+pub async fn listener(args: Args) -> Result<(), Error> {
     loop {
-        let err = listener_inner().await;
+        let err = listener_inner(&args).await;
         // TODO: msg
         let _ = dbg!(err);
         sleep(Duration::from_secs(5)).await;
     }
 }
 
-async fn listener_inner() -> anyhow::Result<()> {
-    let resp = reqwest::get("https://horst.vetmed.fu-berlin.de/")
-        .await?
-        .error_for_status()?;
+async fn listener_inner(args: &Args) -> anyhow::Result<()> {
+    let resp = reqwest::get(args.url.clone()).await?.error_for_status()?;
     let content_type: Mime = resp
         .headers()
         .get(http::header::CONTENT_TYPE)
@@ -46,7 +45,7 @@ async fn listener_inner() -> anyhow::Result<()> {
             \r\n",
             body.len(),
         );
-        let trailer = "--frameboundary";
+        let trailer = "--frameboundary\r\n";
         let mut data = Vec::<u8>::with_capacity(head.len() + body.len() + trailer.len());
         data.extend(head.as_bytes());
         data.extend(body);
@@ -56,3 +55,14 @@ async fn listener_inner() -> anyhow::Result<()> {
     }
     Ok(())
 }
+
+#[derive(clap::Args, Debug)]
+#[command(id = "listener")]
+pub struct Args {
+    /// URL to restream
+    #[arg(long)]
+    url: Url,
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum Error {}

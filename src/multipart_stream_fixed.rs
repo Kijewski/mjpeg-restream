@@ -1,4 +1,4 @@
-// https://gist.githubusercontent.com/grasevski/a7238b5f3775605253b8e73ea2a8d5f2/raw/f083c5b265cd15cff049ee8a344a75c118e7f81e/multipart_stream.rs
+// https://gist.github.com/grasevski/a7238b5f3775605253b8e73ea2a8d5f2/f083c5b265cd15cff049ee8a344a75c118e7f81e
 
 //! Parser for async multipart streams.
 use std::convert::TryFrom;
