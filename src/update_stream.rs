@@ -11,7 +11,7 @@ pub struct UpdateStream<T: Send + Sync + Clone> {
 }
 
 impl<T: Send + Sync + Clone> UpdateStream<T> {
-    pub fn stream_updates<'a>(&'a self) -> impl 'a + Stream<Item = T> {
+    pub fn stream_updates(&self) -> impl '_ + Stream<Item = T> {
         async_stream::stream! {
             let mut idx = 0;
             loop {

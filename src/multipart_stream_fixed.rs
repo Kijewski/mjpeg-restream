@@ -25,7 +25,6 @@ use std::task::{Context, Poll};
 use bytes::{Buf, Bytes, BytesMut};
 use futures_util::Stream;
 use http::header::{self, HeaderMap, HeaderName, HeaderValue};
-use httparse;
 use multipart_stream::Part;
 use pin_project::pin_project;
 
@@ -149,7 +148,7 @@ impl State {
                 },
                 State::Headers => {
                     let mut raw = [httparse::EMPTY_HEADER; 16];
-                    let headers = httparse::parse_headers(&buf, &mut raw)
+                    let headers = httparse::parse_headers(buf, &mut raw)
                         .map_err(|e| parse_err!("Part headers invalid: {}", e))?;
                     match headers {
                         httparse::Status::Complete((body_pos, raw)) => {
@@ -168,7 +167,7 @@ impl State {
                                 .map(|v| v.to_str())
                                 .transpose()
                                 .map_err(|_| parse_err!("Part Content-Length is not valid string"))?
-                                .map(|v| usize::from_str_radix(v, 10))
+                                .map(|v| v.parse())
                                 .transpose()
                                 .map_err(|_| {
                                     parse_err!("Part Content-Length is not valid usize")
@@ -294,14 +293,14 @@ where
         let mut this = self.project();
         loop {
             match this.state.process(
-                &this.boundary,
+                this.boundary,
                 this.buf,
                 *this.max_header_bytes,
                 *this.max_body_bytes,
             ) {
                 Err(e) => {
                     *this.state = State::Done;
-                    return Poll::Ready(Some(Err(e.into())));
+                    return Poll::Ready(Some(Err(e)));
                 },
                 Ok(Poll::Ready(Some(r))) => return Poll::Ready(Some(Ok(r))),
                 Ok(Poll::Ready(None)) => return Poll::Ready(None),
